@@ -3,61 +3,50 @@ WITH vals AS (VALUES('acc +22'),('acc +42'),('nop +456'),('jmp +5'),('acc +31'),
 --WITH vals AS (VALUES('nop +0'),('acc +1'),('jmp +4'),('acc +3'),('jmp -3'),('acc -99'),('acc +1'),('jmp -4'),('acc +6')),
 splitted_data AS (
     SELECT regexp_split_to_array(column1,' ') as datas,
-           row_number() over() as inst_id,
-           0 as executed,
-           0 as output
+           row_number() over() as inst_id
       FROM vals
  )
- SELECT datas[1] as instruction,
+ SELECT datas[1] as operation,
         datas[2]::int4 as data,
-        inst_id,
-        executed,
-        output
+        inst_id
    INTO TEMPORARY TABLE console
    FROM splitted_data;
 
-CREATE FUNCTION run_machine() RETURNS int AS $$
-DECLARE
-pos int4 := 1;
-result_pos int4;
-pos_increment int4;
-accumulator int4 :=0;
-iter int4:=0;
-tmp_data int4;
-operation varchar;
+WITH RECURSIVE run_machine AS(
+    SELECT inst_id,
+           CASE
+             WHEN operation='nop' THEN inst_id+1
+             WHEN operation='acc' THEN inst_id+1
+             WHEN operation='jmp' THEN inst_id+data
+           END as next_inst_id,
+           CASE
+             WHEN operation='nop' THEN 0
+             WHEN operation='acc' THEN data
+             WHEN operation='jmp' THEN 0
+           END as accumulator,
+           concat('/',inst_id,'/') as path
+      FROM console
+     WHERE inst_id=1
 
-BEGIN
- WHILE (select executed FROM console WHERE inst_id=pos)::int4=0
-   LOOP
-       pos_increment:=1;
-       result_pos:=0;
-       iter := iter + 1;
+     UNION ALL
 
-       operation := (SELECT instruction FROM console WHERE inst_id=pos);
-       tmp_data := (SELECT data FROM console WHERE inst_id=pos)::int4;
+     SELECT c.inst_id,
+            CASE
+              WHEN c.operation='nop' THEN c.inst_id+1
+              WHEN c.operation='acc' THEN c.inst_id+1
+              WHEN c.operation='jmp' THEN c.inst_id+c.data
+            END as next_inst_id,
+            CASE
+              WHEN c.operation='nop' THEN 0
+              WHEN c.operation='acc' THEN c.data
+              WHEN c.operation='jmp' THEN 0
+            END as accumulator,
+            concat(r.path,c.inst_id,'/') as path
+       FROM console c
+       JOIN run_machine r ON c.inst_id=r.next_inst_id
+       WHERE position(concat('/',c.inst_id,'/') in r.path)=0
 
-       IF operation='acc' THEN
-           accumulator := accumulator + tmp_data;
-       ELSIF operation='jmp' THEN
-           pos_increment := tmp_data;
-       END IF;
-
-       UPDATE console SET executed=iter WHERE inst_id=pos;
-
-
-       IF result_pos>0 THEN
-           pos := result_pos;
-       ELSE
-           pos := pos + pos_increment;
-       END IF;
-
-       RAISE NOTICE '% % % -> %', operation, tmp_data,  accumulator, pos;
-
-   END LOOP;
-
-   RETURN accumulator;
-END;
-$$ LANGUAGE plpgsql;
-
-SELECT run_machine();
+)
+SELECT sum(accumulator)
+  FROM run_machine;
 rollback;

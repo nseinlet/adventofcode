@@ -3,82 +3,69 @@ WITH vals AS (VALUES('acc +22'),('acc +42'),('nop +456'),('jmp +5'),('acc +31'),
 --WITH vals AS (VALUES('nop +0'),('acc +1'),('jmp +4'),('acc +3'),('jmp -3'),('acc -99'),('acc +1'),('jmp -4'),('acc +6')),
 splitted_data AS (
     SELECT regexp_split_to_array(column1,' ') as datas,
-           row_number() over() as inst_id,
-           0 as executed,
-           0 as output
+           row_number() over() as inst_id
       FROM vals
- )
- SELECT datas[1] as instruction,
-        datas[2]::int4 as data,
-        inst_id,
-        executed,
-        output
-   INTO TEMPORARY TABLE console_tmp
-   FROM splitted_data;
-
-CREATE FUNCTION run_machine(instruction_revert int4) RETURNS int AS $$
-DECLARE
-pos int4 := 1;
-result_pos int4;
-pos_increment int4;
-accumulator int4 :=0;
-iter int4:=0;
-tmp_data int4;
-operation varchar;
-prog_end int4;
-
-BEGIN
-DROP TABLE IF EXISTS console;
- CREATE TEMPORARY TABLE console AS (select * from console_tmp);
- operation := (SELECT instruction FROM console WHERE inst_id=instruction_revert);
- IF operation='jmp' THEN
-     UPDATE console SET instruction='nop' WHERE inst_id=instruction_revert;
- ELSIF operation='nop' THEN
-     UPDATE console SET instruction='jmp' WHERE inst_id=instruction_revert;
- END IF;
-
- prog_end := (SELECT max(inst_id) FROM CONSOLE);
- WHILE (select executed FROM console WHERE inst_id=pos)::int4=0 AND (pos<=prog_end)
-   LOOP
-       pos_increment:=1;
-       result_pos:=0;
-       iter := iter + 1;
-
-       operation := (SELECT instruction FROM console WHERE inst_id=pos);
-       tmp_data := (SELECT data FROM console WHERE inst_id=pos)::int4;
-
-       IF operation='acc' THEN
-           accumulator := accumulator + tmp_data;
-       ELSIF operation='jmp' THEN
-           pos_increment := tmp_data;
-       END IF;
-
-       UPDATE console SET executed=iter WHERE inst_id=pos;
-
-
-       IF result_pos>0 THEN
-           pos := result_pos;
-       ELSE
-           pos := pos + pos_increment;
-       END IF;
-
-   END LOOP;
-   IF pos>prog_end THEN
-    RETURN accumulator;
-   ELSE
-    RETURN NULL;
-    END IF;
-END;
-$$ LANGUAGE plpgsql;
-
-
-WITH machines AS (
-SELECT run_machine(s) as r,
-       s as inst
-  FROM generate_series(1, (SELECT MAX(inst_id)::int4 FROM console_tmp)) s
+ ),
+ one_console AS(
+     SELECT datas[1] as instruction,
+            datas[2]::int4 as data,
+            inst_id
+       FROM splitted_data
 )
-SELECT r
-  FROM machines
- WHERE r IS NOT NULL;
+SELECT c2.inst_id as console_id,
+       CASE
+         WHEN c2.inst_id=c.inst_id AND c.instruction='jmp' THEN 'nop'
+         WHEN c2.inst_id=c.inst_id AND c.instruction='nop' THEN 'jmp'
+         ELSE c.instruction
+       END as operation,
+       c.data,
+       c.inst_id
+  INTO TEMPORARY TABLE console
+  FROM one_console c,one_console c2;
 
+WITH RECURSIVE run_machine AS(
+  SELECT console_id,
+         inst_id,
+         CASE
+           WHEN operation='nop' THEN inst_id+1
+           WHEN operation='acc' THEN inst_id+1
+           WHEN operation='jmp' THEN inst_id+data
+         END as next_inst_id,
+         CASE
+           WHEN operation='nop' THEN 0
+           WHEN operation='acc' THEN data
+           WHEN operation='jmp' THEN 0
+         END as accumulator,
+         concat('/',inst_id,'/') as path
+    FROM console
+   WHERE inst_id=1
+
+   UNION ALL
+
+   SELECT c.console_id,
+          c.inst_id,
+          CASE
+            WHEN c.operation='nop' THEN c.inst_id+1
+            WHEN c.operation='acc' THEN c.inst_id+1
+            WHEN c.operation='jmp' THEN c.inst_id+c.data
+          END as next_inst_id,
+          CASE
+            WHEN c.operation='nop' THEN 0
+            WHEN c.operation='acc' THEN c.data
+            WHEN c.operation='jmp' THEN 0
+          END as accumulator,
+          concat(r.path,c.inst_id,'/') as path
+     FROM console c
+     JOIN run_machine r ON c.inst_id=r.next_inst_id
+                       AND c.console_id=r.console_id
+    WHERE position(concat('/',c.inst_id,'/') in r.path)=0
+)
+
+  SELECT sum(accumulator),
+         max(reverse(split_part(reverse("path"), '/', 2))::int4) as last_op,
+         console_id
+    FROM run_machine
+GROUP BY console_id
+ORDER BY 2 DESC
+   LIMIT 1;
 rollback;
