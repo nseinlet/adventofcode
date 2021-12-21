@@ -43,7 +43,7 @@ max_turn AS (
     SELECT max(turn) AS t FROM folding
 ),
 ir AS (
-SELECT CASE WHEN f.x IS NOT NULL THEN '#' ELSE '.' END AS p,
+SELECT CASE WHEN f.x IS NOT NULL THEN '#' ELSE ' ' END AS p,
        gx.gx,
        gy.gy
        FROM generate_series(0, (SELECT max_x FROM folding order by turn DESC LIMIT 1)) AS gx
