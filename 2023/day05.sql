@@ -171,16 +171,6 @@ seed_ranges AS (
       FROM seeds s
       JOIN seeds s2 ON s.seed_id = s2.seed_id - 1
      WHERE mod(s.seed_id, 2) = 1
-
-),
-all_seed_limits AS (
-    SELECT seed_min
-      FROM seed_ranges
-     UNION ALL
-    SELECT seed_max
-      FROM seed_ranges
-      UNION ALL
-
 ),
 map_ids_no_end AS (
     SELECT (string_to_array(val,' map:'))[1] AS map
@@ -223,10 +213,55 @@ seeding_connexions AS (
      WHERE h.map = 'humidity-to-location'
        AND h.target_begin = 0
 ),
+reverse_range AS(
+    SELECT origin_begin as ob
+          ,array['temperature-to-humidity', 'light-to-temperature', 'water-to-light', 'fertilizer-to-water', 'soil-to-fertilizer', 'seed-to-soil'] as mappings
+    FROM mapping
+   WHERE map = 'humidity-to-location'
+
+   UNION ALL
+
+    (WITH srr AS (
+    SELECT CASE 
+                WHEN m.origin_begin IS NULL THEN r.ob 
+                ELSE m.origin_begin+r.ob-m.target_begin
+           END as ob
+          ,mappings[2:] as mappings
+          ,mappings[1] as current_mapping
+      FROM reverse_range r
+      JOIN mapping m ON m.map = r.mappings[1] AND m.target_begin <= r.ob AND m.target_end >= r.ob
+      WHERE array_length(mappings,1) > 0
+    ),
+    curent_origins AS (
+        SELECT origin_begin as ob
+            ,origin_end+1 as ob_end
+              ,m.mappings
+          FROM mapping 
+     LEFT JOIN LATERAL (SELECT mappings, current_mapping FROM srr LIMIT 1) AS m ON TRUE
+         WHERE map = m.current_mapping
+    )
+    SELECT ob
+          ,mappings
+      FROM srr
+    UNION ALL
+    SELECT ob
+          ,mappings
+      FROM curent_origins
+    UNION ALL
+    SELECT ob_end
+          ,mappings
+      FROM curent_origins
+    )
+),
+all_seeds AS (
+    SELECT ob as seed
+      FROM reverse_range
+    WHERE EXISTS (SELECT 1 FROM seed_ranges WHERE seed_min <= ob AND seed_max > ob)
+),
 seeding_soil AS (
    SELECT s.seed
          ,COALESCE(soil.target_begin + (s.seed - soil.origin_begin), s.seed) as soil_id
-     FROM seeds s
+     FROM all_seeds s
 LEFT JOIN mapping soil ON s.seed BETWEEN soil.origin_begin AND soil.origin_end AND soil.map = 'seed-to-soil'
 ),
 seeding_fertilizer AS (
@@ -286,21 +321,9 @@ seeding AS (
      FROM seeding_humidity s
 LEFT JOIN mapping location ON s.humidity_id BETWEEN location.origin_begin AND location.origin_end AND location.map = 'humidity-to-location'
 ),
-humidity_inv AS (
-    SELECT t.origin_begin
-          ,t.origin_end
-      FROM mapping h
-      JOIN mapping t ON t.target_begin <= h.origin_end AND t.target_end >= h.origin_begin AND t.map = 'temperature-to-humidity'
-     WHERE h.map = 'humidity-to-location'
-       AND h.target_begin = 0
-
-UNION ALL
-    SELECT h.origin_begin
+ex2 AS (
+    select min(location_id) as res1 from seeding
 )
 
 
-select min(location_id) as res1 from seeding
--- select * from seeding_humidity2;
-
-
--- 389056265 too high
+select * from ex2;
